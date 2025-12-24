@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="aSWMultiplexer.vcxproj" Id="8f63d584-c9dc-4981-8b94-33d6d31f7eee" />
+</Solution>
