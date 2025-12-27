@@ -6,30 +6,174 @@
 #include "log.hpp"
 #include "csv_loader.hpp"
 #include "config.hpp"
+#include "records.hpp"
+#include "diagnostics.h"
 
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+
 
 // ============================================================================
-// Internal helpers
+// Injection subsystem context and API (runtime redirection layer)
 // ============================================================================
 
+static InjectionContext g_injectionContext{};
+
+void InitInjectionContext(
+    const SlotDescriptor& slot,
+    const std::vector<ModuleDescriptor>& modules)
+{
+    g_injectionContext.slot = &slot;
+    g_injectionContext.modules = &modules;
+
+    Diagnostics_RecordEvent(
+        DiagnosticsEventType::Info,
+        "Injection subsystem initialized: " +
+        std::to_string(modules.size()) + " modules in slot fileIndex " +
+        std::to_string(slot.fileIndex)
+    );
+
+    logf("Injection subsystem initialized: %zu modules, slot fileIndex=0x%02X",
+        modules.size(), slot.fileIndex);
+}
+
+std::string ExplainFormIDRewrite(uint32_t originalFormID, uint32_t rewrittenFormID)
+{
+    if (originalFormID == rewrittenFormID) {
+        return "FormID was not rewritten (no mapping applied).";
+    }
+
+    return "FormID was rewritten from " +
+        std::to_string(originalFormID) + " to " +
+        std::to_string(rewrittenFormID) +
+        " based on module formIdMap mapping into the dummy slot.";
+}
 namespace
 {
-    // Compose a full FormID from a dummy slot virtual ID + local form ID.
-    // virtualID behaves like a synthetic file index (high byte).
+    // Small helper for hex formatting in diagnostics/logs.
+    static std::string to_hex(uint32_t value)
+    {
+        char buf[9]{};
+        sprintf_s(buf, "%08X", value);
+        return std::string(buf);
+    }
+
+    // ========================================================================
+    // FormID decoding
+    // ========================================================================
+
+    struct DecodedFormID
+    {
+        uint32_t original = 0;
+        uint8_t pluginIndex = 0;
+        uint32_t localID = 0;
+
+        bool isESL = false;
+        uint16_t eslSlot = 0;
+
+        bool isLocal = false;
+    };
+
+    static DecodedFormID DecodeFormID(uint32_t formID)
+    {
+        DecodedFormID out;
+        out.original = formID;
+
+        out.pluginIndex = (formID >> 24) & 0xFF;
+        out.localID = formID & 0x00FFFFFFu;
+
+        if (out.pluginIndex == 0x00) {
+            out.isLocal = true;
+            return out;
+        }
+
+        if (out.pluginIndex == 0xFE) {
+            out.isESL = true;
+            out.eslSlot = static_cast<uint16_t>((out.localID >> 12) & 0x0FFFu);
+            out.localID = out.localID & 0x0FFFu;
+            return out;
+        }
+
+        return out;
+    }
+
+    // ========================================================================
+    // Module lookup
+    // ========================================================================
+
+    static const ModuleDescriptor* FindModuleForDecodedID(const DecodedFormID& id)
+    {
+        if (!g_injectionContext.modules)
+            return nullptr;
+
+        for (const auto& m : *g_injectionContext.modules)
+        {
+            if (m.isESL && id.isESL && id.pluginIndex == 0xFE && id.eslSlot == m.eslSlot)
+                return &m;
+
+            if (!m.isESL && !id.isESL && id.pluginIndex == m.originalFileIndex)
+                return &m;
+        }
+
+        return nullptr;
+    }
+
+    // ========================================================================
+    // SAFETY LAYER — Whitelist: Only rewrite FormIDs belonging to this slot
+    // ========================================================================
+
+    static bool IsFormIDInSlot(const DecodedFormID& id)
+    {
+        if (!g_injectionContext.modules)
+            return false;
+
+        for (const auto& m : *g_injectionContext.modules)
+        {
+            if (!m.isESL && !id.isESL && id.pluginIndex == m.originalFileIndex)
+                return true;
+
+            if (m.isESL && id.isESL && id.eslSlot == m.eslSlot)
+                return true;
+        }
+
+        return false;
+    }
+
+    // ========================================================================
+    // SAFETY LAYER — Missing mapping detector
+    // ========================================================================
+
+    static void ReportMissingMapping(const ModuleDescriptor* mod, uint32_t localKey)
+    {
+        static std::unordered_set<uint64_t> reported;
+
+        uint64_t key = (uint64_t(mod) << 32) | localKey;
+        if (reported.count(key))
+            return;
+
+        reported.insert(key);
+
+        Diagnostics_RecordEvent(
+            DiagnosticsEventType::Warning,
+            "Missing mapping: module=" + mod->name +
+            ", localKey=0x" + to_hex(localKey)
+        );
+
+        logf("WARNING: Missing mapping for module=%s localKey=%06X",
+            mod->name.c_str(), localKey);
+    }
+
+    // ========================================================================
+    // Existing helpers (unchanged)
+    // ========================================================================
+
     inline std::uint32_t compose_formid(std::uint32_t virtualID, std::uint32_t local)
     {
         return (virtualID << 24) | (local & 0x00FFFFFFu);
     }
 
-    // ESL-aware LVLI reference remap.
-    // - For non-ESL modules:
-    //     - if hi-byte == 0, treat as local, key = full 0x00FFFFFF
-    // - For ESL modules:
-    //     - if hi-byte == 0, treat as local compact ID (0x000–0xFFF)
-    //     - if hi-byte == 0xFE and eslSlot matches, treat as local compact ID
     inline std::uint32_t remap_lvli_ref(
         std::uint32_t refFormID,
         const std::unordered_map<std::uint32_t, std::uint32_t>& formIdMap,
@@ -49,7 +193,6 @@ namespace
             return refFormID;
         }
 
-        // ESL path
         if (hi == 0x00000000u) {
             const std::uint32_t compact = local & 0x0FFFu;
             auto it = formIdMap.find(compact);
@@ -74,7 +217,6 @@ namespace
         return refFormID;
     }
 
-    // Stub: inject a single record into the runtime.
     bool inject_single_record_stub(
         std::uint32_t targetFormID,
         std::uint32_t recordType,
@@ -103,7 +245,6 @@ namespace
         return true;
     }
 
-    // Find which CSVSlot a plugin belongs to.
     const CSVSlot* find_slot_for_plugin(
         const std::vector<CSVSlot>& slots,
         const std::string& pluginName)
@@ -117,12 +258,55 @@ namespace
         }
         return nullptr;
     }
+} // end anonymous namespace
+uint32_t ResolveAndRewriteFormID(uint32_t formID)
+{
+    // Toggle: allow disabling rewrite entirely
+    if (!g_enableRuntimeRewrite)
+        return formID;
+
+    if (!g_injectionContext.slot || !g_injectionContext.modules)
+        return formID;
+
+    DecodedFormID decoded = DecodeFormID(formID);
+
+    // Whitelist: only rewrite FormIDs belonging to this slot
+    if (!IsFormIDInSlot(decoded))
+        return formID;
+
+    const ModuleDescriptor* mod = FindModuleForDecodedID(decoded);
+    if (!mod)
+        return formID;
+
+    uint32_t localKey = mod->isESL
+        ? (decoded.localID & 0x00000FFFu)
+        : (decoded.localID & 0x00FFFFFFu);
+
+    auto it = mod->formIdMap.find(localKey);
+    if (it == mod->formIdMap.end()) {
+        ReportMissingMapping(mod, localKey);
+        return formID;
+    }
+
+    uint32_t targetFormID = it->second;
+
+    Diagnostics_RecordEvent(
+        DiagnosticsEventType::Info,
+        "Rewrite: " + mod->name +
+        " 0x" + to_hex(formID) +
+        " -> 0x" + to_hex(targetFormID)
+    );
+
+    if (g_eslDebug) {
+        logf("Rewrite: module=%s original=%08X localKey=%06X target=%08X",
+            mod->name.c_str(),
+            formID,
+            localKey,
+            targetFormID);
+    }
+
+    return targetFormID;
 }
-
-// ============================================================================
-// Discover and mount BA2 archives for all modules within a slot
-// ============================================================================
-
 bool mount_archives(SlotDescriptor& slot)
 {
     for (auto& m : slot.modules) {
@@ -133,12 +317,6 @@ bool mount_archives(SlotDescriptor& slot)
     }
     return true;
 }
-
-// ============================================================================
-// Build per-module mapping from local form IDs to composed target IDs
-// ESL-aware: keys are compact IDs (0x000–0xFFF) for ESL plugins.
-// ============================================================================
-
 bool build_form_maps(SlotDescriptor& slot)
 {
     std::uint32_t subBase = 0x000100u;
@@ -189,11 +367,6 @@ bool build_form_maps(SlotDescriptor& slot)
 
     return true;
 }
-
-// ============================================================================
-// Inject using plugin-level CSV routing, ESL-aware LVLI remap
-// ============================================================================
-
 bool inject_records(
     const SlotDescriptor& slot,
     const std::vector<CSVSlot>& csvSlots)

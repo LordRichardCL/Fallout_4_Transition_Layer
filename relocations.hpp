@@ -15,6 +15,12 @@ void* (*)(const char* name);
 using GetLoadedModIndex_t =
 UInt8(*)(const char* name);
 
+// NEW: FormID lookup function type.
+// Adjust the name/signature if your target differs.
+class TESForm;
+using LookupFormByID_t =
+TESForm * (*)(std::uint32_t formID);
+
 // ============================================================================
 // Relocation namespace (Old‑Gen FO4 1.10.163)
 // ============================================================================
@@ -31,4 +37,13 @@ namespace Reloc
 
     // GetLoadedModIndex @ 0x003C2F70
     inline RelocAddr<GetLoadedModIndex_t> GetLoadedModIndex(0x003C2F70);
+
+    // NEW: LookupFormByID (offset placeholder!)
+    //
+    // IMPORTANT:
+    // - Replace 0x00000000 with the REAL offset for your chosen
+    //   FormID lookup function (from 1.10.163).
+    // - Until you do, the hook installer will see 0 and skip installing.
+    inline RelocAddr<LookupFormByID_t> LookupFormByID(0x003C2F90);
+
 }

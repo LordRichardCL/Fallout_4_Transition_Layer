@@ -26,7 +26,6 @@
 // Globals
 // ============================================================================
 
-// From config.cpp
 extern bool g_debugLogging;
 extern bool g_scanOnStartup;
 extern std::string g_targetModule;
@@ -36,64 +35,46 @@ extern bool g_showConsole;
 
 F4SEInterface* g_f4se = nullptr;
 
-// Alias map: original plugin name -> DummySlotXXX.esp
-// (non-static so diagnostics/identity can see it)
 std::unordered_map<std::string, std::string> g_pluginAliasMap;
-
-// Console state (non-static so diagnostics can see it)
 bool g_consoleActive = false;
 
-// Simple trampoline wrapper (using SKSE/F4SE-style branch write)
+// ============================================================================
+// Simple trampoline
+// ============================================================================
+
 class SimpleTrampoline
 {
 public:
     explicit SimpleTrampoline(std::size_t size)
     {
-        m_buffer = (std::uint8_t*)VirtualAlloc(
-            nullptr,
-            size,
-            MEM_COMMIT | MEM_RESERVE,
-            PAGE_EXECUTE_READWRITE
-        );
+        m_buffer = (std::uint8_t*)VirtualAlloc(nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
         m_capacity = size;
         m_writePtr = m_buffer;
     }
 
-    ~SimpleTrampoline()
-    {
-        // Typically never freed in plugins.
-        // if (m_buffer) VirtualFree(m_buffer, 0, MEM_RELEASE);
-    }
+    ~SimpleTrampoline() {}
 
-    // Writes a 5-byte CALL at src, redirecting to dst.
-    // Returns the original function stub pointer.
     void* Write5CallEx(std::uintptr_t src, std::uintptr_t dst)
     {
         if (!src || !dst)
             return nullptr;
 
-        // Backup original bytes
         std::uint8_t original[5];
         std::memcpy(original, (void*)src, 5);
 
-        // Allocate space in trampoline for original bytes + jump back
-        if (!m_buffer || (m_writePtr + 5 + 5 > m_buffer + m_capacity)) {
+        if (!m_buffer || (m_writePtr + 10 > m_buffer + m_capacity))
             return nullptr;
-        }
 
         std::uint8_t* stub = m_writePtr;
-        m_writePtr += 5 + 5;
+        m_writePtr += 10;
 
-        // Copy original bytes into stub
         std::memcpy(stub, original, 5);
 
-        // Add jump back to src+5
         std::uintptr_t returnAddr = src + 5;
         std::uint8_t* jmpBack = stub + 5;
         jmpBack[0] = 0xE9;
         *(std::int32_t*)(jmpBack + 1) = (std::int32_t)(returnAddr - (std::uintptr_t)(jmpBack + 5));
 
-        // Now patch src with CALL dst
         SafeWrite8(src, 0xE8);
         std::int32_t rel = (std::int32_t)(dst - (src + 5));
         SafeWrite32(src + 1, rel);
@@ -170,14 +151,8 @@ static void LoadAliasesFromSlotCfg()
 
     auto trim = [](std::string& s) {
         auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
-
-        // left
-        s.erase(s.begin(),
-            std::find_if(s.begin(), s.end(), [&](unsigned char c) { return !is_space(c); }));
-        // right
-        s.erase(
-            std::find_if(s.rbegin(), s.rend(), [&](unsigned char c) { return !is_space(c); }).base(),
-            s.end());
+        s.erase(s.begin(), std::find_if(s.begin(), s.end(), [&](unsigned char c) { return !is_space(c); }));
+        s.erase(std::find_if(s.rbegin(), s.rend(), [&](unsigned char c) { return !is_space(c); }).base(), s.end());
         };
 
     while (std::getline(in, line)) {
@@ -186,12 +161,7 @@ static void LoadAliasesFromSlotCfg()
             continue;
 
         if (line[0] == '[') {
-            if (_stricmp(line.c_str(), "[Aliases]") == 0) {
-                inAliasesSection = true;
-            }
-            else {
-                inAliasesSection = false;
-            }
+            inAliasesSection = (_stricmp(line.c_str(), "[Aliases]") == 0);
             continue;
         }
 
@@ -236,35 +206,28 @@ static const char* ResolvePluginAlias(const char* name)
 
     auto it = g_pluginAliasMap.find(name);
     if (it == g_pluginAliasMap.end())
-        return name; // no alias, return original
+        return name;
 
     const std::string& mapped = it->second;
 
-    if (g_debugLogging) {
+    if (g_debugLogging)
         logf("Alias: '%s' -> '%s'", name, mapped.c_str());
-    }
 
     return mapped.c_str();
 }
-
 // ============================================================================
 // Hooks
 // ============================================================================
 
-// Function pointer types are defined in relocations.hpp:
-//   using LookupModByName_t   = void* (*)(const char*);
-//   using GetLoadedModIndex_t = UInt8 (*)(const char*);
-
 static LookupModByName_t   s_originalLookupModByName = nullptr;
 static GetLoadedModIndex_t s_originalGetLoadedModIndex = nullptr;
+static LookupFormByID_t    s_originalLookupFormByID = nullptr;
 
 static void* Hook_LookupModByName(const char* name)
 {
-    // System-dependent plugins must retain their original identity
     if (IsSystemDependentCall(name)) {
-        if (g_debugLogging) {
+        if (g_debugLogging)
             logf("Identity: System-dependent plugin '%s' bypassed alias redirection in LookupModByName.", name ? name : "<null>");
-        }
         return s_originalLookupModByName(name);
     }
 
@@ -275,9 +238,8 @@ static void* Hook_LookupModByName(const char* name)
 static UInt8 Hook_GetLoadedModIndex(const char* name)
 {
     if (IsSystemDependentCall(name)) {
-        if (g_debugLogging) {
+        if (g_debugLogging)
             logf("Identity: System-dependent plugin '%s' bypassed alias redirection in GetLoadedModIndex.", name ? name : "<null>");
-        }
         return s_originalGetLoadedModIndex(name);
     }
 
@@ -285,42 +247,67 @@ static UInt8 Hook_GetLoadedModIndex(const char* name)
     return s_originalGetLoadedModIndex(aliased);
 }
 
-// Install hooks using RelocAddr offsets
-static bool InstallRedirectionHooks()
+// NEW: Hook for FormID lookup — integrates the runtime injection subsystem.
+static TESForm* Hook_LookupFormByID(std::uint32_t formID)
 {
-    if (!g_trampoline) {
-        // Reserve 4 KB for stubs — more than enough for a couple of hooks.
-        g_trampoline = new SimpleTrampoline(4096);
+    // Let the injection subsystem decide whether to rewrite the FormID.
+    std::uint32_t rewritten = ResolveAndRewriteFormID(formID);
+
+    if (rewritten != formID && g_eslDebug) {
+        logf("Hook_LookupFormByID: %08X -> %08X", formID, rewritten);
     }
 
-    // These addresses come from RelocAddr<> in relocations.hpp
+    if (!s_originalLookupFormByID) {
+        logf("ERROR: s_originalLookupFormByID is null in Hook_LookupFormByID; returning nullptr.");
+        return nullptr;
+    }
+
+    return s_originalLookupFormByID(rewritten);
+}
+
+static bool InstallRedirectionHooks()
+{
+    if (!g_trampoline)
+        g_trampoline = new SimpleTrampoline(4096);
+
     std::uintptr_t addrLookup = Reloc::LookupModByName.GetUIntPtr();
     std::uintptr_t addrIndex = Reloc::GetLoadedModIndex.GetUIntPtr();
+    std::uintptr_t addrFormID = Reloc::LookupFormByID.GetUIntPtr(); // NEW
 
     if (addrLookup == 0 || addrIndex == 0) {
         logf("ERROR: RelocAddr returned 0 — redirection hooks not installed. Check your offsets.");
         return false;
     }
 
-    s_originalLookupModByName = (LookupModByName_t)g_trampoline->Write5CallEx(
-        addrLookup,
-        (std::uintptr_t)&Hook_LookupModByName
-    );
-
-    s_originalGetLoadedModIndex = (GetLoadedModIndex_t)g_trampoline->Write5CallEx(
-        addrIndex,
-        (std::uintptr_t)&Hook_GetLoadedModIndex
-    );
+    s_originalLookupModByName =
+        (LookupModByName_t)g_trampoline->Write5CallEx(addrLookup, (std::uintptr_t)&Hook_LookupModByName);
+    s_originalGetLoadedModIndex =
+        (GetLoadedModIndex_t)g_trampoline->Write5CallEx(addrIndex, (std::uintptr_t)&Hook_GetLoadedModIndex);
 
     if (!s_originalLookupModByName || !s_originalGetLoadedModIndex) {
         logf("ERROR: Failed to install redirection hooks.");
         return false;
     }
 
+    // Install FormID hook only if we have a valid relocation address.
+    if (addrFormID != 0) {
+        s_originalLookupFormByID =
+            (LookupFormByID_t)g_trampoline->Write5CallEx(addrFormID, (std::uintptr_t)&Hook_LookupFormByID);
+
+        if (!s_originalLookupFormByID) {
+            logf("ERROR: Failed to install FormID redirection hook.");
+        }
+        else {
+            logf("FormID redirection hook installed successfully.");
+        }
+    }
+    else {
+        logf("INFO: Reloc::LookupFormByID offset is 0 — FormID hook not installed yet.");
+    }
+
     logf("Redirection hooks installed successfully.");
     return true;
 }
-
 // ============================================================================
 // F4SE Plugin Query
 // ============================================================================
@@ -352,11 +339,16 @@ bool F4SEPlugin_Load(const F4SEInterface* f4se)
 {
     g_f4se = const_cast<F4SEInterface*>(f4se);
 
-    logf("aSWMultiplexer plugin loaded.");
+    //
+    // ------------------------------------------------------------
+    // NEW: Clear log immediately on plugin load
+    // ------------------------------------------------------------
+    clear_log();
+    logf("Multiplexer plugin loading...");
 
     //
     // ------------------------------------------------------------
-    // FORCE CONSOLE EARLY SO USERS SEE STARTUP BANNER
+    // Console initialization
     // ------------------------------------------------------------
     InitializeConsoleIfEnabled();
 
@@ -367,13 +359,13 @@ bool F4SEPlugin_Load(const F4SEInterface* f4se)
         std::cout << std::endl;
     }
 
-    // Also print to loader logs (MO2, Vortex, DebugView)
     OutputDebugStringA("[aSWMultiplexer] Virtualization layer active\n");
     OutputDebugStringA("[aSWMultiplexer] Alias redirection enabled\n");
     OutputDebugStringA("[aSWMultiplexer] System plugin protection enabled\n");
 
+    //
     // ------------------------------------------------------------
-    // Load configuration from INI
+    // Load configuration
     // ------------------------------------------------------------
     logf("Loading configuration...");
     LoadConfig();
@@ -384,22 +376,19 @@ bool F4SEPlugin_Load(const F4SEInterface* f4se)
         g_eslDebug ? "YES" : "NO",
         g_showConsole ? "YES" : "NO");
 
-    // Initialize identity layer (system-dependent detection)
     Identity_Initialize();
-
-    // Initialize diagnostics
     Diagnostics_Initialize();
 
     CONSOLEF("=== aSWMultiplexer Initialization ===");
-    CONSOLEF("Configuration loaded:");
     CONSOLEF(std::string("  Debug Logging: ") + (g_debugLogging ? "ENABLED" : "DISABLED"));
     CONSOLEF(std::string("  ESL Debug: ") + (g_eslDebug ? "YES" : "NO"));
     CONSOLEF(std::string("  Scan On Startup: ") + (g_scanOnStartup ? "YES" : "NO"));
     CONSOLEF(std::string("  Target Module: '") + (g_targetModule.empty() ? "<none>" : g_targetModule.c_str()) + "'");
     CONSOLEF(std::string("  CSV Path: '") + g_csvPath + "'");
 
+    //
     // ------------------------------------------------------------
-    // Install redirection hooks (before anything asks for mods)
+    // Install hooks (alias + FormID runtime redirection)
     // ------------------------------------------------------------
     if (!InstallRedirectionHooks()) {
         CONSOLEF("ERROR: Failed to install redirection hooks. Plugin will continue without alias redirection.");
@@ -409,18 +398,16 @@ bool F4SEPlugin_Load(const F4SEInterface* f4se)
         CONSOLEF("Redirection hooks installed successfully.");
     }
 
-    // Run validator once we have identity + aliases (loaded later), but we can at
-    // least warn about identity-only issues now.
-    Diagnostics_RunValidator(); // first-pass (will warn about system + alias once aliases are loaded too)
+    Diagnostics_RunValidator();
 
     if (!g_scanOnStartup) {
         logf("ScanOnStartup=0 — skipping record scanning.");
         CONSOLEF("ScanOnStartup=0 — skipping record scanning. Initialization complete.");
         return true;
     }
-
+    //
     // ------------------------------------------------------------
-    // Load CSV dummy-slot mapping
+    // CSV loading
     // ------------------------------------------------------------
     CONSOLEF("");
     CONSOLEF("[Step 1/4] Loading CSV dummy-slot mapping...");
@@ -441,8 +428,9 @@ bool F4SEPlugin_Load(const F4SEInterface* f4se)
         CONSOLEF("WARNING: No CSV path specified — skipping CSV slot mapping.");
     }
 
+    //
     // ------------------------------------------------------------
-    // Load slot configuration
+    // Slot configuration
     // ------------------------------------------------------------
     CONSOLEF("");
     CONSOLEF("[Step 2/4] Loading slot configuration...");
@@ -457,18 +445,19 @@ bool F4SEPlugin_Load(const F4SEInterface* f4se)
     logf("Loaded slot.cfg: fileIndex=0x%02X, modules=%zu", slot.fileIndex, slot.modules.size());
     CONSOLEF("Slot configuration loaded. Modules in slot: " + std::to_string(slot.modules.size()));
 
+    //
     // ------------------------------------------------------------
-    // Load aliases from slot.cfg
+    // Alias loading
     // ------------------------------------------------------------
     CONSOLEF("");
     CONSOLEF("[Aliases] Loading plugin alias mappings from slot.cfg...");
     LoadAliasesFromSlotCfg();
 
-    // Now that aliases are loaded, re-run validator to catch system+alias conflicts
     Diagnostics_RunValidator();
 
+    //
     // ------------------------------------------------------------
-    // Scan metadata for each module (ESL detection, FE slot, etc.)
+    // Metadata scanning
     // ------------------------------------------------------------
     CONSOLEF("");
     CONSOLEF("[Step 3/4] Scanning module metadata (ESL, FE slots, etc.)...");
@@ -490,8 +479,9 @@ bool F4SEPlugin_Load(const F4SEInterface* f4se)
         }
     }
 
+    //
     // ------------------------------------------------------------
-    // Build form ID maps
+    // Build form maps
     // ------------------------------------------------------------
     CONSOLEF("");
     CONSOLEF("[Step 4/4] Building form ID maps...");
@@ -505,7 +495,13 @@ bool F4SEPlugin_Load(const F4SEInterface* f4se)
     CONSOLEF("Form ID maps built successfully.");
 
     // ------------------------------------------------------------
-    // Inject records using CSV slot mapping
+    // NEW: Initialize runtime injection context for FormID rewrite
+    // ------------------------------------------------------------
+    InitInjectionContext(slot, slot.modules);
+
+    //
+    // ------------------------------------------------------------
+    // Inject records
     // ------------------------------------------------------------
     CONSOLEF("");
     CONSOLEF("[Final] Injecting records using CSV slot mapping...");
