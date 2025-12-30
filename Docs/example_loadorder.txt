@@ -1,0 +1,14 @@
+# Example loadorder.txt
+# One plugin per line, no commas
+# Lines starting with # are ignored
+# Lines starting with * indicate enabled mods (MO2 style)
+
+Unofficial Fallout 4 Patch.esp
+RaiderOverhaul.esp
+ProjectValkyrie.esp
+Depravity.esp
+SimSettlements.esp
+WeaponsOfFate.esp
+ArmorsmithExtended.esp
+BetterLocationalDamage.esp
+TrueStormsFO4.esp

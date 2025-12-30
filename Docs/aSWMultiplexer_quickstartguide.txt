@@ -1,0 +1,83 @@
+📘 aSWMultiplexer — Quick Start Guide (Updated)
+This system virtualizes your load order and merges weapon, armor, keyword, and leveled‑list content at runtime using 20 fixed dummy ESPs.
+
+✅ 1. Install and enable your original mods
+- Install all mods you want included (weapons, armor, leveled lists, etc.)
+- Enable them in Vortex or MO2
+- Let your mod manager sort the load order
+- Close the game and your mod manager
+
+✅ 2. Export your load order and copy it next to the CSV Builder
+📌 Where Vortex saves loadorder.txt
+Vortex stores your load order file here:
+%LOCALAPPDATA%\Fallout4
+
+
+Copy loadorder.txt into the same folder as csvbuilder.exe.
+
+✅ 3. Run the CSV Builder
+The tool will generate:
+- loadorder_mapped_filtered_clean.csv
+- slot.cfg
+- worldspace_skipped.txt
+- worldspace_diagnostics.txt
+- mixed_records.txt
+- csvbuilder.log
+All written to:
+Fallout 4/Data/F4SE/Plugins/Multiplexer/
+
+
+
+✅ 4. Disable the original mods in Vortex/MO2
+After generating the CSV:
+- Disable only the plugins that were multiplexed
+- Leave the 20 dummy ESPs enabled
+- Keep the aSWMultiplexer F4SE plugin enabled
+⭐ Important for StoryWealth Users
+Do NOT disable the core StoryWealth collection plugins.
+These include:
+- Quest mods
+- Framework mods
+- Script‑heavy mods
+- Worldspace mods
+- Settlement mods
+- StoryWealth‑required dependencies
+Only content‑mods that were multiplexed (weapons, armor, keywords, leveled lists) should be disabled.
+Everything else — especially StoryWealth’s main collection plugins — must remain active.
+This ensures:
+- StoryWealth continues functioning normally
+- Quests and scripts remain intact
+- Worldspaces remain stable
+- Frameworks remain loaded
+- Only safe categories are virtualized
+
+✅ 5. Enable the Dummy Plugins
+Your mod archive includes 20 empty dummy ESPs:
+- 5 Weapons
+- 5 Armor
+- 5 Keywords
+- 5 Leveled Lists
+Enable all 20 in Vortex/MO2.
+Load order does not matter.
+
+✅ 6. Launch the game via F4SE
+The Multiplexer will:
+- Load your CSV
+- Read slot.cfg
+- Inject all remapped records at runtime
+You now have a fully merged, ESL‑aware, compressed‑record‑compatible runtime patch.
+
+📝 Important Notes
+- Regenerate the CSV whenever you add/remove mods
+- Only disable the plugins that were multiplexed
+- StoryWealth’s core plugins must remain active
+- Dummy ESPs must be enabled
+- The Multiplexer plugin must be installed in:
+Fallout 4/Data/F4SE/Plugins/
+- Worldspace‑touching plugins must remain enabled normally
+- Protected plugins must be listed in:
+Fallout 4/Data/F4SE/Plugins/Multiplexer/extern/protected_plugins.json
+
+
+
+

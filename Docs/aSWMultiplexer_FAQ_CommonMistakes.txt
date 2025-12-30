@@ -1,0 +1,137 @@
+❓ Frequently Asked Questions
+Q: Do I keep my original mods enabled after generating the CSV?
+A: No.
+Disable all original mods after generating the CSV.
+The Multiplexer injects everything at runtime — the original plugins must be disabled.
+
+Q: Why must loadorder.txt be next to csvbuilder.exe?
+Because the CSV Builder only reads the load order from its own folder.
+If it’s missing, the CSV will be empty or incomplete.
+
+Q: Do the dummy ESPs need a specific load order?
+No.
+Dummy ESPs are virtual namespaces.
+Their load order does not matter.
+
+Q: How many dummy ESPs do I need to enable?
+Exactly 20.
+The Multiplexer uses a fixed set of 20 dummy plugins:
+- 5 Weapons
+- 5 Armor
+- 5 Keywords
+- 5 Leveled Lists
+These must all be enabled.
+
+Q: Do dummy ESPs count toward the plugin limit?
+Yes.
+Dummy ESPs are real plugin files and therefore consume plugin indices.
+However:
+• 	The Multiplexer uses only 20 dummy ESPs
+• 	They are empty and contain no records
+• 	They do not cause conflicts
+• 	They do not degrade performance
+
+Q: Does this modify my save file?
+No.
+All injection happens in memory at runtime.
+Your save remains clean.
+
+Q: Can I add or remove mods later?
+Yes — but you must regenerate the CSV.
+Any change to your mod list requires a new CSV mapping.
+
+Q: Does this work with ESLs and compact FormIDs?
+Yes.
+The Multiplexer fully supports:
+- ESL compact FormIDs
+- FE‑range FormIDs
+- Compressed records
+- Creation Club ESLs
+Everything is scanned and injected correctly.
+
+Q: Does this replace a Bashed Patch or Merged Patch?
+Yes, for leveled lists and keyword distribution.
+No manual patching is needed.
+
+Q: Do I need to run FO4Edit?
+No.
+The Multiplexer handles everything automatically.
+
+Q: Does this work with MO2?
+Yes.
+Workflow is identical:
+- Enable original mods
+- Generate CSV
+- Disable original mods
+- Enable dummy ESPs
+- Launch via F4SE
+
+Q: What is protected_plugins.json?
+A file that lists plugins that must never be multiplexed.
+Correct path:
+Fallout 4/Data/F4SE/Plugins/Multiplexer/extern/protected_plugins.json
+
+
+
+Q: What are worldspace_skipped.txt and worldspace_diagnostics.txt?
+These files list plugins that contain:
+- WRLD
+- CELL
+- LAND
+- NAVM
+- REFR
+- ACHR
+These plugins cannot be multiplexed and must remain enabled normally.
+
+Q: What is mixed_records.txt?
+A diagnostic file listing plugins that contain multiple safe categories
+(e.g., WEAP + ARMO).
+These are still multiplexed normally.
+
+⚠️ Common Mistakes (Updated)
+❌ Mistake #1 — Forgetting to copy loadorder.txt next to csvbuilder.exe
+Result: CSV is empty or missing mods.
+Fix: Copy loadorder.txt into the CSV Builder folder.
+
+❌ Mistake #2 — Leaving original mods enabled after CSV generation
+Result: Duplicate records or conflicts.
+Fix: Disable all original mods after generating the CSV.
+
+❌ Mistake #3 — Not enabling the 20 dummy ESPs
+Result: The Multiplexer has nowhere to inject records.
+Fix: Enable all 20 dummy ESPs.
+
+❌ Mistake #4 — Launching the game without F4SE
+Result: The Multiplexer plugin never loads.
+Fix: Always launch via f4se_loader.exe.
+
+❌ Mistake #5 — Editing the CSV or slot.cfg manually
+Result: Broken mappings or missing records.
+Fix: Let the CSV Builder generate these files automatically.
+
+❌ Mistake #6 — Adding new mods without regenerating the CSV
+Result: New mods won’t be included.
+Fix: Re‑run the CSV Builder whenever your mod list changes.
+
+❌ Mistake #7 — Expecting dummy ESPs to contain data
+Result: Confusion.
+Fix: Dummy ESPs are intentionally empty.
+All content is injected at runtime.
+
+❌ Mistake #8 — Thinking the plugin modifies game files
+Result: Unnecessary worry.
+Fix: The plugin only injects data into memory.
+Nothing on disk is changed.
+
+❌ Mistake #9 — Ignoring worldspace warnings
+Result: Crashes or broken worldspaces.
+Fix: Any plugin listed in worldspace_skipped.txt must remain enabled normally.
+
+❌ Mistake #10 — Forgetting protected plugins
+Result: Critical mods may be multiplexed incorrectly.
+Fix: Add them to:
+Multiplexer/extern/protected_plugins.json
+
+
+
+
