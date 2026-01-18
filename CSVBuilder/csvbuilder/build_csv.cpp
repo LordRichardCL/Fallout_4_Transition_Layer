@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -16,6 +17,8 @@
 #include <map>
 #include <algorithm>
 #include <cmath>
+
+
 
 // ------------------------------------------------------------
 // Helpers: string utilities
@@ -155,6 +158,15 @@ std::string ReadRegistryString(HKEY root, const char* path, const char* key) {
     RegCloseKey(hKey);
     return std::string(value);
 }
+//Helper: Function for loadorder.txt
+void WriteMultiplexedLoadOrder(
+    const std::vector<std::string>& originalOrder,
+    const std::unordered_set<std::string>& multiplexed,
+    const std::unordered_set<std::string>& keepEnabled,
+    const std::unordered_set<std::string>& enableDummy,
+    const std::filesystem::path& outputPath,
+    std::ofstream& log);
+
 
 // ------------------------------------------------------------
 // Helper: Parse Steam libraryfolders.vdf
@@ -427,12 +439,10 @@ struct RecordHeader {
 static inline bool IsWorldspaceSignature(const char sig[4]) {
     return
         (sig[0] == 'W' && sig[1] == 'R' && sig[2] == 'L' && sig[3] == 'D') || // WRLD
-        (sig[0] == 'C' && sig[1] == 'E' && sig[2] == 'L' && sig[3] == 'L') || // CELL
         (sig[0] == 'L' && sig[1] == 'A' && sig[2] == 'N' && sig[3] == 'D') || // LAND
-        (sig[0] == 'N' && sig[1] == 'A' && sig[2] == 'V' && sig[3] == 'M') || // NAVM
-        (sig[0] == 'R' && sig[1] == 'E' && sig[2] == 'F' && sig[3] == 'R') || // REFR
-        (sig[0] == 'A' && sig[1] == 'C' && sig[2] == 'H' && sig[3] == 'R');   // ACHR
+        (sig[0] == 'N' && sig[1] == 'A' && sig[2] == 'V' && sig[3] == 'M');   // NAVM
 }
+
 
 static inline bool IsSignature(const char sig[4], const char* tag) {
     return sig[0] == tag[0] && sig[1] == tag[1] && sig[2] == tag[2] && sig[3] == tag[3];
@@ -463,19 +473,23 @@ PluginAnalysis AnalyzePluginRecords(const std::filesystem::path& pluginPath, std
 
         char sig[4] = { rec->sig[0], rec->sig[1], rec->sig[2], rec->sig[3] };
 
-        // GRUP: skip entire group length
+        //
+        // GRUP HANDLING FIX — only skip the 24‑byte header, not the entire group
+        //
         if (IsSignature(sig, "GRUP")) {
-            if (offset + 8 > fileSize) break;
-            std::uint32_t groupSize = *reinterpret_cast<std::uint32_t*>(&data[offset + 4]);
-            if (groupSize == 0 || offset + groupSize > fileSize) {
-                log << "ANALYZE: Invalid GRUP size in " << pluginPath.filename().string() << "\n";
+            if (offset + 24 > fileSize) {
+                log << "ANALYZE: GRUP header truncated in " << pluginPath.filename().string() << "\n";
                 break;
             }
-            offset += groupSize;
+
+            // Skip only the GRUP header
+            offset += 24;
             continue;
         }
 
+        //
         // Regular record
+        //
         std::uint32_t dataSize = rec->dataSize;
         std::size_t recordSize = sizeof(RecordHeader) + dataSize;
 
@@ -484,7 +498,9 @@ PluginAnalysis AnalyzePluginRecords(const std::filesystem::path& pluginPath, std
             break;
         }
 
+        //
         // Category detection
+        //
         if (IsWorldspaceSignature(sig)) {
             result.touchesWorldspace = true;
             result.worldspaceSigs.emplace_back(std::string(sig, sig + 4));
@@ -516,6 +532,7 @@ PluginAnalysis AnalyzePluginRecords(const std::filesystem::path& pluginPath, std
 
     return result;
 }
+
 
 // ------------------------------------------------------------
 // Determine primary category for routing
@@ -1117,8 +1134,194 @@ int main() {
         << std::filesystem::file_size(outputSlotCfg)
         << " bytes\n";
 
+
+    //
+    // STEP 8 — Write Vortex‑ready plugins.txt
+    //
+
+    // Build sets for rewriting the load order
+    std::unordered_set<std::string> multiplexedSet;
+    for (const auto& p : includedPlugins)
+        multiplexedSet.insert(ToLower(p.name));
+
+    std::unordered_set<std::string> keepEnabledSet;
+    for (const auto& p : worldspaceSkipped)
+        keepEnabledSet.insert(ToLower(p));
+    for (const auto& p : protectedOnly)
+        keepEnabledSet.insert(ToLower(p));
+
+    // Convert PluginEntry → vector<string> of names
+    std::vector<std::string> originalLoadOrder;
+    originalLoadOrder.reserve(includedPlugins.size());
+    for (const auto& p : includedPlugins)
+        originalLoadOrder.push_back(p.name);
+
+    // Write the new load order
+    WriteMultiplexedLoadOrder(
+        originalLoadOrder,
+        multiplexedSet,
+        keepEnabledSet,
+        usedDummyFiles,
+        pluginPath,
+        log
+    );
+
+
+    //
+    // OPTIONAL — Ask user if they want to copy plugins.txt into Vortex profiles
+    //
+    {
+        try {
+            std::filesystem::path profilesRoot =
+                std::filesystem::path(std::getenv("APPDATA")) /
+                "Vortex" / "fallout4" / "profiles";
+
+            if (!std::filesystem::exists(profilesRoot)) {
+                std::cout << "\nVortex profiles folder not found at:\n"
+                    << profilesRoot.string() << "\n";
+                log << "Vortex profiles folder not found: " << profilesRoot.string() << "\n";
+            }
+            else {
+                // Collect profiles
+                std::vector<std::filesystem::path> profiles;
+                for (const auto& entry : std::filesystem::directory_iterator(profilesRoot)) {
+                    if (entry.is_directory())
+                        profiles.push_back(entry.path());
+                }
+
+                if (profiles.empty()) {
+                    std::cout << "\nNo Vortex profiles found.\n";
+                    log << "No Vortex profiles found.\n";
+                }
+                else {
+                    std::cout << "\nDetected Vortex profiles:\n";
+                    for (size_t i = 0; i < profiles.size(); ++i) {
+                        std::cout << "  " << (i + 1) << ") "
+                            << profiles[i].filename().string() << "\n";
+                    }
+
+                    std::cout << "\nCopy plugins.txt into:\n"
+                        << "  1) A specific profile\n"
+                        << "  2) All profiles\n"
+                        << "  3) Skip\n"
+                        << "Enter choice: ";
+
+                    int choice = 0;
+                    std::cin >> choice;
+
+                    if (choice == 1) {
+                        std::cout << "Select profile number: ";
+                        int p = 0;
+                        std::cin >> p;
+
+                        if (p >= 1 && p <= (int)profiles.size()) {
+                            auto target = profiles[p - 1] / "plugins.txt";
+
+                            std::filesystem::create_directories(target.parent_path());
+                            std::filesystem::copy_file(
+                                std::filesystem::current_path() / "plugins.txt",
+                                target,
+                                std::filesystem::copy_options::overwrite_existing
+                            );
+
+                            std::cout << "Copied to: " << target.string() << "\n";
+                            log << "Copied plugins.txt to: " << target.string() << "\n";
+                        }
+                        else {
+                            std::cout << "Invalid profile selection.\n";
+                        }
+                    }
+                    else if (choice == 2) {
+                        for (const auto& profile : profiles) {
+                            auto target = profile / "plugins.txt";
+
+                            try {
+                                std::filesystem::create_directories(target.parent_path());
+                                std::filesystem::copy_file(
+                                    std::filesystem::current_path() / "plugins.txt",
+                                    target,
+                                    std::filesystem::copy_options::overwrite_existing
+                                );
+
+                                std::cout << "Copied to: " << target.string() << "\n";
+                                log << "Copied plugins.txt to: " << target.string() << "\n";
+                            }
+                            catch (const std::exception& e) {
+                                std::cerr << "Failed to copy to " << profile.string()
+                                    << ": " << e.what() << "\n";
+                                log << "ERROR copying to " << profile.string()
+                                    << ": " << e.what() << "\n";
+                            }
+                        }
+                    }
+                    else {
+                        std::cout << "Skipping Vortex profile copy.\n";
+                    }
+                }
+            }
+        }
+        catch (const std::exception& e) {
+            std::cerr << "Error while handling Vortex profiles: " << e.what() << "\n";
+            log << "ERROR handling Vortex profiles: " << e.what() << "\n";
+        }
+    }
+
+    // Flush leftover input so the window doesn't close instantly
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
     std::cout << "\nDone. Press Enter to exit...";
     std::cin.get();
 
     return 0;
+} // end of main()
+
+
+
+// ============================================================
+// WriteMultiplexedLoadOrder — writes plugins.txt
+// ============================================================
+void WriteMultiplexedLoadOrder(
+    const std::vector<std::string>& originalOrder,
+    const std::unordered_set<std::string>& multiplexed,
+    const std::unordered_set<std::string>& keepEnabled,
+    const std::unordered_set<std::string>& enableDummy,
+    const std::filesystem::path& outputPath,
+    std::ofstream& log)
+{
+    std::filesystem::path outFile =
+        std::filesystem::current_path() / "plugins.txt";
+
+    log << "DEBUG: Writing multiplexed load order to: "
+        << outFile.string() << "\n";
+
+    std::ofstream out(outFile);
+    if (!out) {
+        log << "ERROR: Failed to write plugins.txt\n";
+        return;
+    }
+
+    out << "# Auto-generated by CSV Builder\n";
+    out << "# Multiplexed plugins disabled; dummy plugins enabled.\n\n";
+
+    for (const auto& raw : originalOrder) {
+        std::string clean = Trim(Sanitize(raw));
+        if (clean.empty())
+            continue;
+
+        std::string lower = ToLower(clean);
+
+        if (keepEnabled.count(lower))
+            out << clean << "\n";
+        else if (multiplexed.count(lower))
+            out << "# " << clean << "\n";
+        else
+            out << clean << "\n";
+    }
+
+    out << "\n# === Dummy Plugins Enabled by Multiplexer ===\n";
+
+    for (const auto& d : enableDummy)
+        out << d << "\n";
+
+    log << "DEBUG: Finished writing plugins.txt\n";
 }
